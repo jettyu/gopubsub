@@ -6,72 +6,73 @@ import (
 	pubsub "github.com/jettyu/gopubsub"
 )
 
-type testObserver struct {
-	V int
+type testSubscriber struct {
+	v int
 }
 
-func (p *testObserver) ID() interface{} {
-	return p
-}
-
-func (p *testObserver) OnPublish(v interface{}) error {
-	p.V = v.(int)
+func (p *testSubscriber) OnPublish(v interface{}) error {
+	p.v = v.(int)
 	return nil
 }
 
 func TestPublisher(t *testing.T) {
-	sub := pubsub.NewConcreteTopic(nil)
+	topic, _ := pubsub.NewTopic(nil, nil)
 	var (
-		ob1 testObserver
-		ob2 testObserver
+		ob1 testSubscriber
+		ob2 testSubscriber
 	)
-	sub.Subscribe(&ob1)
-	sub.Subscribe(&ob2)
-	sub.Publish(1)
-	if ob1.V != 1 || ob2.V != 1 {
+	topic.Subscribe(&ob1)
+	topic.Subscribe(&ob2)
+	topic.Publish(1)
+	if ob1.v != 1 || ob2.v != 1 {
 		t.Fatal(ob1, ob2)
 	}
-	sub.Unsubscribe(&ob2)
-	sub.Publish(2)
-	if ob1.V != 2 || ob2.V != 1 {
+	topic.Unsubscribe(&ob2)
+	topic.Publish(2)
+	if ob1.v != 2 || ob2.v != 1 {
 		t.Fatal(ob1, ob2)
 	}
 }
 
-func TestCenter(t *testing.T) {
-	center := pubsub.NewRealTopicCenter(pubsub.NewRealTopic(nil))
-	pb, _ := center.GetAndCreate(1)
-	ob1 := &testObserver{}
-	ob2 := &testObserver{}
-	pb.Subscribe(ob1)
-	pb.Subscribe(ob2)
-	pb.Publish(1)
-	if ob1.V != 1 {
-		t.Fatal(ob1)
+func TestMultiTopic(t *testing.T) {
+	mt := pubsub.NewMultiTopic(nil, false)
+	defer mt.Destroy()
+	subers := map[string][]*testSubscriber{
+		"a": []*testSubscriber{
+			&testSubscriber{
+				1,
+			},
+			&testSubscriber{
+				1,
+			},
+		},
+		"b": []*testSubscriber{
+			&testSubscriber{
+				1,
+			},
+			&testSubscriber{
+				1,
+			},
+		},
 	}
-	pb.Unsubscribe(ob1)
-	pb.Publish(2)
-	if ob1.V != 1 || ob2.V != 2 {
-		t.Fatal(ob1, ob2)
+	for id, v := range subers {
+		for _, suber := range v {
+			mt.Subscribe(id, suber)
+		}
 	}
-	pb.Unsubscribe(ob2)
-}
-
-func TestCenterConcrete(t *testing.T) {
-	center := pubsub.NewRealTopicCenter(pubsub.NewRealTopic(pubsub.NewConcreteTopicFunc(nil)))
-	pb, _ := center.GetAndCreate(1)
-	ob1 := &testObserver{}
-	ob2 := &testObserver{}
-	pb.Subscribe(ob1)
-	pb.Subscribe(ob2)
-	pb.Publish(1)
-	if ob1.V != 1 {
-		t.Fatal(ob1)
+	mt.Publish("a", 100)
+	mt.Publish("b", 200)
+	for _, v := range subers["a"] {
+		if v.v != 100 {
+			t.Fatal(subers)
+		}
 	}
-	pb.Unsubscribe(ob1)
-	pb.Publish(2)
-	if ob1.V != 1 || ob2.V != 2 {
-		t.Fatal(ob1, ob2)
+	for _, v := range subers["b"] {
+		if v.v != 200 {
+			t.Fatal(subers)
+		}
 	}
-	pb.Unsubscribe(ob2)
+	for _, v := range subers["a"] {
+		mt.Unsubscribe("a", v)
+	}
 }
