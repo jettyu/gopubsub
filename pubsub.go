@@ -28,6 +28,8 @@ type MultiTopic interface {
 	DestroyAll() error
 	Range(f func(id interface{}, topic Topic) bool)
 	Len() int
+	SetContext(interface{}) MultiTopic
+	GetContext() interface{}
 }
 
 // TopicMaker ...
@@ -148,9 +150,10 @@ func (p *safeTopic) Len() int {
 
 type multiTopic struct {
 	sync.RWMutex
-	maker  TopicMaker
-	topics map[interface{}]Topic
-	frozen bool
+	maker   TopicMaker
+	topics  map[interface{}]Topic
+	frozen  bool
+	context interface{}
 }
 
 var defaultTopicMaker = func(parent MultiTopic,
@@ -253,4 +256,18 @@ func (p *multiTopic) Len() int {
 	n := len(p.topics)
 	p.RUnlock()
 	return n
+}
+
+func (p *multiTopic) SetContext(c interface{}) MultiTopic {
+	p.Len()
+	p.context = c
+	p.Unlock()
+	return p
+}
+
+func (p *multiTopic) GetContext() interface{} {
+	p.Lock()
+	c := p.context
+	p.Unlock()
+	return c
 }
