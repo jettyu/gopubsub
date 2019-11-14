@@ -22,19 +22,17 @@ type Topic interface {
 // MultiTopic ...
 type MultiTopic interface {
 	Publish(id, value interface{}) error
-	Subscribe(id interface{}, suber Subscriber) error
+	Subscribe(id interface{}, suber Subscriber, context ...interface{}) error
 	Unsubscribe(id interface{}, suber Subscriber) error
 	Destroy(id interface{}, topic Topic) error
 	DestroyAll() error
 	Range(f func(id interface{}, topic Topic) bool)
 	Len() int
-	SetContext(interface{}) MultiTopic
-	GetContext() interface{}
 }
 
 // TopicMaker ...
-type TopicMaker func(parent MultiTopic,
-	id interface{}, first Subscriber) (child Topic, err error)
+type TopicMaker func(id interface{}, first Subscriber,
+	context ...interface{}) (topic Topic, err error)
 
 // NewDefaultTopic ...
 func NewDefaultTopic() Topic {
@@ -150,14 +148,13 @@ func (p *safeTopic) Len() int {
 
 type multiTopic struct {
 	sync.RWMutex
-	maker   TopicMaker
-	topics  map[interface{}]Topic
-	frozen  bool
-	context interface{}
+	maker  TopicMaker
+	topics map[interface{}]Topic
+	frozen bool
 }
 
-var defaultTopicMaker = func(parent MultiTopic,
-	id interface{}, first Subscriber) (tp Topic, err error) {
+var defaultTopicMaker = func(id interface{}, first Subscriber,
+	context ...interface{}) (tp Topic, err error) {
 	tp = newDefaultTopic()
 	return
 }
@@ -183,12 +180,13 @@ func (p *multiTopic) Publish(id, v interface{}) error {
 	return nil
 }
 
-func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (e error) {
+func (p *multiTopic) Subscribe(id interface{}, suber Subscriber,
+	context ...interface{}) (e error) {
 	p.Lock()
 	defer p.Unlock()
 	tp, ok := p.topics[id]
 	if !ok {
-		tp, e = p.maker(p, id, suber)
+		tp, e = p.maker(id, suber, context...)
 		if e != nil {
 			return
 		}
@@ -256,18 +254,4 @@ func (p *multiTopic) Len() int {
 	n := len(p.topics)
 	p.RUnlock()
 	return n
-}
-
-func (p *multiTopic) SetContext(c interface{}) MultiTopic {
-	p.Len()
-	p.context = c
-	p.Unlock()
-	return p
-}
-
-func (p *multiTopic) GetContext() interface{} {
-	p.Lock()
-	c := p.context
-	p.Unlock()
-	return c
 }
