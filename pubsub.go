@@ -15,133 +15,157 @@ type Topic interface {
 	Publish(interface{}) error
 	Subscribe(Subscriber) error
 	Unsubscribe(Subscriber) error
-	Destroy()
+	Destroy() error
+	Len() int
 }
 
-// MultiToplic ...
-type MultiToplic interface {
+// MultiTopic ...
+type MultiTopic interface {
 	Publish(id, value interface{}) error
 	Subscribe(id interface{}, suber Subscriber) error
 	Unsubscribe(id interface{}, suber Subscriber) error
-	Destroy()
+	Destroy(id interface{}, topic Topic) error
+	DestroyAll() error
+	Range(f func(id interface{}, topic Topic) bool)
+	Len() int
 }
 
-// TopicPlug ...
-type TopicPlug interface {
-	Init(Subscriber) error
-	Subscribe(Subscriber) error
-	Unsubscribe(Subscriber) error
-	Destroy() error
+// TopicMaker ...
+type TopicMaker func(parent MultiTopic,
+	id interface{}, first Subscriber) (child Topic, err error)
+
+// NewDefaultTopic ...
+func NewDefaultTopic() Topic {
+	return newDefaultTopic()
 }
 
-// NewTopic ...
-func NewTopic(plug TopicPlug, suber Subscriber) (Topic, error) {
-	return newTopic(plug, suber, nil, nil)
+// NewSafeTopic : add mutex for topic
+// if topic == nil, will use the defautTopic
+func NewSafeTopic(topic Topic) Topic {
+	return newSafeTopic(topic)
 }
 
-// NewMultiTopic ...
-func NewMultiTopic(plug TopicPlug, frozen bool) MultiToplic {
-	return newMultiTopic(plug, frozen)
+// NewMultiTopic :
+// if maker == nil, will use the defautTopic
+// if frozen == false, the topic will destroy when it has been empty
+func NewMultiTopic(maker TopicMaker, frozen bool) MultiTopic {
+	return newMultiTopic(maker, frozen)
 }
 
-type topic struct {
-	sync.RWMutex
-	plug   TopicPlug
+type defaultTopic struct {
 	subers map[Subscriber]struct{}
-	center *multiTopic
-	id     interface{}
 }
 
-func newTopic(plug TopicPlug, suber Subscriber,
-	center *multiTopic, id interface{}) (tp *topic, e error) {
-	tp = &topic{
-		plug:   plug,
+func newDefaultTopic() *defaultTopic {
+	return &defaultTopic{
 		subers: make(map[Subscriber]struct{}),
 	}
-	if plug != nil {
-		e = plug.Init(suber)
-	}
-	return tp, e
 }
 
-func (p *topic) Publish(v interface{}) error {
-	p.RLock()
+func (p *defaultTopic) Publish(v interface{}) error {
 	for suber := range p.subers {
 		suber.OnPublish(v)
 	}
-	p.RUnlock()
 	return nil
 }
 
-func (p *topic) Subscribe(suber Subscriber) error {
-	p.Lock()
-	defer p.Unlock()
+func (p *defaultTopic) Subscribe(suber Subscriber) error {
 	_, ok := p.subers[suber]
 	if ok {
 		return os.ErrExist
-	}
-	if p.plug != nil {
-		e := p.plug.Subscribe(suber)
-		if e != nil {
-			return e
-		}
 	}
 	p.subers[suber] = struct{}{}
 	return nil
 }
 
-func (p *topic) Unsubscribe(suber Subscriber) error {
-	p.Lock()
-	p.Unlock()
+func (p *defaultTopic) Unsubscribe(suber Subscriber) error {
 	_, ok := p.subers[suber]
 	if !ok {
-		return nil
-	}
-	if p.plug != nil {
-		e := p.plug.Unsubscribe(suber)
-		if e != nil {
-			return e
-		}
+		return os.ErrNotExist
 	}
 	delete(p.subers, suber)
 	return nil
 }
 
-func (p *topic) Destroy() {
-	p.Lock()
-	defer p.Unlock()
-	if p.plug != nil {
-		p.plug.Destroy()
-	}
-	if p.center != nil {
-		p.center.removeTopic(p.id, p)
-	}
+func (p *defaultTopic) Destroy() error {
 	p.subers = make(map[Subscriber]struct{})
+	return nil
 }
 
-func (p *topic) destroyIfEmpty() error {
+func (p *defaultTopic) Len() int {
+	return len(p.subers)
+}
+
+type safeTopic struct {
+	sync.RWMutex
+	self Topic
+}
+
+func newSafeTopic(self Topic) (tp *safeTopic) {
+	tp = &safeTopic{
+		self: self,
+	}
+	if self == nil {
+		tp.self = NewDefaultTopic()
+	}
+	return
+}
+
+func (p *safeTopic) Publish(v interface{}) error {
+	p.RLock()
+	e := p.self.Publish(v)
+	p.RUnlock()
+	return e
+}
+
+func (p *safeTopic) Subscribe(suber Subscriber) error {
 	p.Lock()
 	defer p.Unlock()
-	if len(p.subers) != 0 {
-		return nil
-	}
-	if p.plug != nil {
-		return p.plug.Destroy()
-	}
-	return nil
+	e := p.self.Subscribe(suber)
+	return e
+}
+
+func (p *safeTopic) Unsubscribe(suber Subscriber) error {
+	p.Lock()
+	p.Unlock()
+	e := p.self.Unsubscribe(suber)
+	return e
+}
+
+func (p *safeTopic) Destroy() error {
+	p.Lock()
+	defer p.Unlock()
+	e := p.self.Destroy()
+	return e
+}
+
+func (p *safeTopic) Len() int {
+	p.RLock()
+	n := p.self.Len()
+	p.RUnlock()
+	return n
 }
 
 type multiTopic struct {
 	sync.RWMutex
-	plug   TopicPlug
-	topics map[interface{}]*topic
+	maker  TopicMaker
+	topics map[interface{}]Topic
 	frozen bool
 }
 
-func newMultiTopic(plug TopicPlug, frozen bool) *multiTopic {
+var defaultTopicMaker = func(parent MultiTopic,
+	id interface{}, first Subscriber) (tp Topic, err error) {
+	tp = newDefaultTopic()
+	return
+}
+
+func newMultiTopic(maker TopicMaker, frozen bool) *multiTopic {
+	if maker == nil {
+		maker = defaultTopicMaker
+	}
 	return &multiTopic{
-		plug:   plug,
-		topics: make(map[interface{}]*topic),
+		maker:  maker,
+		topics: make(map[interface{}]Topic),
 		frozen: frozen,
 	}
 }
@@ -161,7 +185,7 @@ func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (e error) {
 	defer p.Unlock()
 	tp, ok := p.topics[id]
 	if !ok {
-		tp, e = newTopic(p.plug, suber, p, id)
+		tp, e = p.maker(p, id, suber)
 		if e != nil {
 			return
 		}
@@ -185,24 +209,48 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 	if p.frozen {
 		return nil
 	}
-	return tp.destroyIfEmpty()
+
+	if tp.Len() == 0 {
+		tp.Destroy()
+	}
+	delete(p.topics, id)
+	return
 }
 
-func (p *multiTopic) Destroy() {
+func (p *multiTopic) Destroy(id interface{}, topic Topic) error {
 	p.Lock()
-	p.Unlock()
+	defer p.Unlock()
+	tp, ok := p.topics[id]
+	if !ok || tp != topic {
+		return nil
+	}
+	delete(p.topics, id)
+	return tp.Destroy()
+}
+
+func (p *multiTopic) DestroyAll() error {
+	p.Lock()
+	defer p.Unlock()
 	for _, topic := range p.topics {
 		topic.Destroy()
 	}
-	p.topics = make(map[interface{}]*topic)
+	p.topics = make(map[interface{}]Topic)
+	return nil
 }
 
-func (p *multiTopic) removeTopic(id interface{}, tp *topic) {
-	p.Lock()
-	defer p.Unlock()
-	old, ok := p.topics[id]
-	if !ok || old != tp {
-		return
+func (p *multiTopic) Range(f func(id interface{}, topic Topic) bool) {
+	p.RLock()
+	defer p.RUnlock()
+	for id, topic := range p.topics {
+		if !f(id, topic) {
+			break
+		}
 	}
-	delete(p.topics, id)
+}
+
+func (p *multiTopic) Len() int {
+	p.RLock()
+	n := len(p.topics)
+	p.RUnlock()
+	return n
 }

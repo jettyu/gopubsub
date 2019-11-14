@@ -16,7 +16,7 @@ func (p *testSubscriber) OnPublish(v interface{}) error {
 }
 
 func TestPublisher(t *testing.T) {
-	topic, _ := pubsub.NewTopic(nil, nil)
+	topic := pubsub.NewDefaultTopic()
 	var (
 		ob1 testSubscriber
 		ob2 testSubscriber
@@ -36,7 +36,7 @@ func TestPublisher(t *testing.T) {
 
 func TestMultiTopic(t *testing.T) {
 	mt := pubsub.NewMultiTopic(nil, false)
-	defer mt.Destroy()
+	defer mt.DestroyAll()
 	subers := map[string][]*testSubscriber{
 		"a": []*testSubscriber{
 			&testSubscriber{
@@ -72,7 +72,19 @@ func TestMultiTopic(t *testing.T) {
 			t.Fatal(subers)
 		}
 	}
+	if mt.Len() != 2 {
+		t.Fatal(mt.Len())
+	}
 	for _, v := range subers["a"] {
 		mt.Unsubscribe("a", v)
 	}
+	if mt.Len() != 1 {
+		t.Fatal(mt.Len())
+	}
+	mt.Range(func(id interface{}, topic pubsub.Topic) bool {
+		if id.(string) == "a" {
+			t.Fatal(topic)
+		}
+		return true
+	})
 }
