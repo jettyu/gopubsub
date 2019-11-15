@@ -22,7 +22,7 @@ type Topic interface {
 // MultiTopic ...
 type MultiTopic interface {
 	Publish(id, value interface{}) error
-	Subscribe(id interface{}, suber Subscriber, context ...interface{}) error
+	Subscribe(id interface{}, suber Subscriber) error
 	Unsubscribe(id interface{}, suber Subscriber) error
 	Destroy(id interface{}, topic Topic) error
 	DestroyAll() error
@@ -31,8 +31,7 @@ type MultiTopic interface {
 }
 
 // TopicMaker ...
-type TopicMaker func(id interface{}, first Subscriber,
-	context ...interface{}) (topic Topic, err error)
+type TopicMaker func(id interface{}, first Subscriber) (topic Topic, err error)
 
 // NewDefaultTopic ...
 func NewDefaultTopic() Topic {
@@ -153,8 +152,7 @@ type multiTopic struct {
 	frozen bool
 }
 
-var defaultTopicMaker = func(id interface{}, first Subscriber,
-	context ...interface{}) (tp Topic, err error) {
+var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
 	tp = newDefaultTopic()
 	return
 }
@@ -180,13 +178,12 @@ func (p *multiTopic) Publish(id, v interface{}) error {
 	return nil
 }
 
-func (p *multiTopic) Subscribe(id interface{}, suber Subscriber,
-	context ...interface{}) (e error) {
+func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (e error) {
 	p.Lock()
 	defer p.Unlock()
 	tp, ok := p.topics[id]
 	if !ok {
-		tp, e = p.maker(id, suber, context...)
+		tp, e = p.maker(id, suber)
 		if e != nil {
 			return
 		}
