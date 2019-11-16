@@ -72,6 +72,17 @@ func TestMultiTopic(t *testing.T) {
 			t.Fatal(subers)
 		}
 	}
+	mt.PublishAll(300)
+	for _, v := range subers["a"] {
+		if v.v != 300 {
+			t.Fatal(subers)
+		}
+	}
+	for _, v := range subers["b"] {
+		if v.v != 300 {
+			t.Fatal(subers)
+		}
+	}
 	if mt.Len() != 2 {
 		t.Fatal(mt.Len())
 	}

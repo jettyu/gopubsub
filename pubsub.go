@@ -27,6 +27,7 @@ type MultiTopic interface {
 	Unsubscribe(id interface{}, suber Subscriber) error
 	Destroy(id interface{}, topic Topic) error
 	DestroyAll() error
+	PublishAll(value interface{}) error
 	Range(f func(id interface{}, topic Topic) bool)
 	Len() int
 }
@@ -46,7 +47,7 @@ func NewSafeTopic(topic Topic) Topic {
 }
 
 // NewMultiTopic :
-// if maker == nil, will use the defautTopic
+// if maker == nil, will use the safeTopic
 // if idelTime < 0, the topic will destroy the topic when which is empty
 // if idelTime > 0, the topic will check and destroy the topic witch is empty
 func NewMultiTopic(maker TopicMaker, idelTime time.Duration) MultiTopic {
@@ -91,6 +92,13 @@ func (p *defaultTopic) Unsubscribe(suber Subscriber) error {
 func (p *defaultTopic) Destroy() error {
 	p.subers = make(map[Subscriber]struct{})
 	return nil
+}
+func (p *defaultTopic) Range(f func(Subscriber) bool) {
+	for s := range p.subers {
+		if !f(s) {
+			break
+		}
+	}
 }
 
 func (p *defaultTopic) Len() int {
@@ -164,9 +172,14 @@ var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err er
 	return
 }
 
+var safeTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
+	tp = newSafeTopic(nil)
+	return
+}
+
 func newMultiTopic(maker TopicMaker, idelTime time.Duration) *multiTopic {
 	if maker == nil {
-		maker = defaultTopicMaker
+		maker = safeTopicMaker
 	}
 	return &multiTopic{
 		maker:    maker,
@@ -275,6 +288,19 @@ func (p *multiTopic) DestroyAll() error {
 		}
 	}
 	p.topics = make(map[interface{}]*topicWithTimer)
+	return nil
+}
+
+func (p *multiTopic) PublishAll(v interface{}) error {
+	p.RLock()
+	topics := make([]*topicWithTimer, 0, len(p.topics))
+	for _, tp := range p.topics {
+		topics = append(topics, tp)
+	}
+	p.RUnlock()
+	for _, tp := range topics {
+		tp.Publish(v)
+	}
 	return nil
 }
 
