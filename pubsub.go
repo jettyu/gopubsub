@@ -218,12 +218,16 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 func (p *multiTopic) Destroy(id interface{}, topic Topic) error {
 	p.Lock()
 	defer p.Unlock()
+	e := topic.Destroy()
+	if e != nil {
+		return e
+	}
 	tp, ok := p.topics[id]
 	if !ok || tp != topic {
 		return nil
 	}
 	delete(p.topics, id)
-	return tp.Destroy()
+	return nil
 }
 
 func (p *multiTopic) DestroyAll() error {
