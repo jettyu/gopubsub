@@ -35,7 +35,7 @@ func TestPublisher(t *testing.T) {
 }
 
 func TestMultiTopic(t *testing.T) {
-	mt := pubsub.NewMultiTopic(nil, false)
+	mt := pubsub.NewMultiTopic(nil, 0)
 	defer mt.DestroyAll()
 	subers := map[string][]*testSubscriber{
 		"a": []*testSubscriber{

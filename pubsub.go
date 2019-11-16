@@ -3,6 +3,7 @@ package pubsub
 import (
 	"os"
 	"sync"
+	"time"
 )
 
 // Subscriber ....
@@ -46,9 +47,10 @@ func NewSafeTopic(topic Topic) Topic {
 
 // NewMultiTopic :
 // if maker == nil, will use the defautTopic
-// if frozen == false, the topic will destroy when it has been empty
-func NewMultiTopic(maker TopicMaker, frozen bool) MultiTopic {
-	return newMultiTopic(maker, frozen)
+// if idelTime < 0, the topic will destroy the topic when which is empty
+// if idelTime > 0, the topic will check and destroy the topic witch is empty
+func NewMultiTopic(maker TopicMaker, idelTime time.Duration) MultiTopic {
+	return newMultiTopic(maker, idelTime)
 }
 
 type defaultTopic struct {
@@ -145,11 +147,16 @@ func (p *safeTopic) Len() int {
 	return n
 }
 
+type topicWithTimer struct {
+	Topic
+	timer *time.Timer
+}
+
 type multiTopic struct {
 	sync.RWMutex
-	maker  TopicMaker
-	topics map[interface{}]Topic
-	frozen bool
+	maker    TopicMaker
+	topics   map[interface{}]*topicWithTimer
+	idelTime time.Duration
 }
 
 var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
@@ -157,14 +164,14 @@ var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err er
 	return
 }
 
-func newMultiTopic(maker TopicMaker, frozen bool) *multiTopic {
+func newMultiTopic(maker TopicMaker, idelTime time.Duration) *multiTopic {
 	if maker == nil {
 		maker = defaultTopicMaker
 	}
 	return &multiTopic{
-		maker:  maker,
-		topics: make(map[interface{}]Topic),
-		frozen: frozen,
+		maker:    maker,
+		topics:   make(map[interface{}]*topicWithTimer),
+		idelTime: idelTime,
 	}
 }
 
@@ -178,18 +185,27 @@ func (p *multiTopic) Publish(id, v interface{}) error {
 	return nil
 }
 
-func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (e error) {
+func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (err error) {
 	p.Lock()
 	defer p.Unlock()
 	tp, ok := p.topics[id]
 	if !ok {
-		tp, e = p.maker(id, suber)
+		itp, e := p.maker(id, suber)
 		if e != nil {
+			err = e
 			return
 		}
+		tp = &topicWithTimer{
+			Topic: itp,
+		}
 		p.topics[id] = tp
+	} else {
+		if tp.timer != nil {
+			tp.timer.Stop()
+			tp.timer = nil
+		}
 	}
-	e = tp.Subscribe(suber)
+	err = tp.Subscribe(suber)
 	return
 }
 
@@ -204,14 +220,30 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 	if e != nil {
 		return
 	}
-	if p.frozen {
+	// do not clear topic
+	if p.idelTime < 0 {
 		return nil
 	}
-
-	if tp.Len() == 0 {
-		tp.Destroy()
+	if tp.Len() != 0 {
+		return nil
 	}
-	delete(p.topics, id)
+	// clear topic at now
+	if p.idelTime == 0 {
+		tp.Destroy()
+		delete(p.topics, id)
+	}
+	// clear topic after idelTime
+	tp.timer = time.AfterFunc(p.idelTime, func() {
+		p.Lock()
+		defer p.Unlock()
+		tp, ok := p.topics[id]
+		if !ok || tp.Len() != 0 {
+			return
+		}
+		tp.Destroy()
+		delete(p.topics, id)
+	})
+
 	return
 }
 
@@ -223,8 +255,11 @@ func (p *multiTopic) Destroy(id interface{}, topic Topic) error {
 		return e
 	}
 	tp, ok := p.topics[id]
-	if !ok || tp != topic {
+	if !ok || tp.Topic != topic {
 		return nil
+	}
+	if tp.timer != nil {
+		tp.timer.Stop()
 	}
 	delete(p.topics, id)
 	return nil
@@ -235,8 +270,11 @@ func (p *multiTopic) DestroyAll() error {
 	defer p.Unlock()
 	for _, topic := range p.topics {
 		topic.Destroy()
+		if topic.timer != nil {
+			topic.timer.Stop()
+		}
 	}
-	p.topics = make(map[interface{}]Topic)
+	p.topics = make(map[interface{}]*topicWithTimer)
 	return nil
 }
 
@@ -244,7 +282,7 @@ func (p *multiTopic) Range(f func(id interface{}, topic Topic) bool) {
 	p.RLock()
 	defer p.RUnlock()
 	for id, topic := range p.topics {
-		if !f(id, topic) {
+		if !f(id, topic.Topic) {
 			break
 		}
 	}
