@@ -48,10 +48,10 @@ func NewSafeTopic(topic Topic) Topic {
 
 // NewMultiTopic :
 // if maker == nil, will use the safeTopic
-// if idelTime < 0, the topic will destroy the topic when which is empty
-// if idelTime > 0, the topic will check and destroy the topic witch is empty
-func NewMultiTopic(maker TopicMaker, idelTime time.Duration) MultiTopic {
-	return newMultiTopic(maker, idelTime)
+// if idleTime < 0, the topic will destroy the topic when which is empty
+// if idleTime > 0, the topic will check and destroy the topic witch is empty
+func NewMultiTopic(maker TopicMaker, idleTime time.Duration) MultiTopic {
+	return newMultiTopic(maker, idleTime)
 }
 
 type defaultTopic struct {
@@ -164,7 +164,7 @@ type multiTopic struct {
 	sync.RWMutex
 	maker    TopicMaker
 	topics   map[interface{}]*topicWithTimer
-	idelTime time.Duration
+	idleTime time.Duration
 }
 
 var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
@@ -177,14 +177,14 @@ var safeTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error
 	return
 }
 
-func newMultiTopic(maker TopicMaker, idelTime time.Duration) *multiTopic {
+func newMultiTopic(maker TopicMaker, idleTime time.Duration) *multiTopic {
 	if maker == nil {
 		maker = safeTopicMaker
 	}
 	return &multiTopic{
 		maker:    maker,
 		topics:   make(map[interface{}]*topicWithTimer),
-		idelTime: idelTime,
+		idleTime: idleTime,
 	}
 }
 
@@ -234,19 +234,19 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 		return
 	}
 	// do not clear topic
-	if p.idelTime < 0 {
+	if p.idleTime < 0 {
 		return nil
 	}
 	if tp.Len() != 0 {
 		return nil
 	}
 	// clear topic at now
-	if p.idelTime == 0 {
+	if p.idleTime == 0 {
 		tp.Destroy()
 		delete(p.topics, id)
 	}
-	// clear topic after idelTime
-	tp.timer = time.AfterFunc(p.idelTime, func() {
+	// clear topic after idleTime
+	tp.timer = time.AfterFunc(p.idleTime, func() {
 		p.Lock()
 		defer p.Unlock()
 		tp, ok := p.topics[id]
