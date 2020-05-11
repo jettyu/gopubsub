@@ -167,11 +167,6 @@ type multiTopic struct {
 	idleTime time.Duration
 }
 
-var defaultTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
-	tp = newDefaultTopic()
-	return
-}
-
 var safeTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
 	tp = newSafeTopic(nil)
 	return
@@ -305,10 +300,14 @@ func (p *multiTopic) PublishAll(v interface{}) error {
 }
 
 func (p *multiTopic) Range(f func(id interface{}, topic Topic) bool) {
+	tmp := make(map[interface{}]Topic)
 	p.RLock()
-	defer p.RUnlock()
 	for id, topic := range p.topics {
-		if !f(id, topic.Topic) {
+		tmp[id] = topic.Topic
+	}
+	p.RUnlock()
+	for id, topic := range tmp {
+		if !f(id, topic) {
 			break
 		}
 	}
