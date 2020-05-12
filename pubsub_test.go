@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	pubsub "github.com/jettyu/gopubsub"
+	"github.com/stretchr/testify/assert"
 )
 
 type testSubscriber struct {
@@ -15,8 +16,7 @@ func (p *testSubscriber) OnPublish(v interface{}) error {
 	return nil
 }
 
-func TestPublisher(t *testing.T) {
-	topic := pubsub.NewDefaultTopic()
+func testTopic(t *testing.T, topic pubsub.Topic) {
 	var (
 		ob1 testSubscriber
 		ob2 testSubscriber
@@ -24,14 +24,31 @@ func TestPublisher(t *testing.T) {
 	topic.Subscribe(&ob1)
 	topic.Subscribe(&ob2)
 	topic.Publish(1)
-	if ob1.v != 1 || ob2.v != 1 {
-		t.Fatal(ob1, ob2)
+	if !assert.Equal(t, 1, ob1.v) {
+		return
 	}
+	if !assert.Equal(t, 1, ob2.v) {
+		return
+	}
+
 	topic.Unsubscribe(&ob2)
 	topic.Publish(2)
-	if ob1.v != 2 || ob2.v != 1 {
-		t.Fatal(ob1, ob2)
+	if !assert.Equal(t, 2, ob1.v) {
+		return
 	}
+	if !assert.Equal(t, 1, ob2.v) {
+		return
+	}
+	topic.Unsubscribe(&ob1)
+	if !assert.Equal(t, true, topic.IsEmpty()) {
+		return
+	}
+}
+
+func TestTopic(t *testing.T) {
+	testTopic(t, pubsub.NewDefaultTopic())
+	testTopic(t, pubsub.NewSyncTopic())
+	testTopic(t, pubsub.NewSafeTopic(nil))
 }
 
 func TestMultiTopic(t *testing.T) {
@@ -63,39 +80,51 @@ func TestMultiTopic(t *testing.T) {
 	mt.Publish("a", 100)
 	mt.Publish("b", 200)
 	for _, v := range subers["a"] {
-		if v.v != 100 {
-			t.Fatal(subers)
+		if !assert.Equal(t, 100, v.v) {
+			return
 		}
 	}
 	for _, v := range subers["b"] {
-		if v.v != 200 {
-			t.Fatal(subers)
+		if !assert.Equal(t, 200, v.v) {
+			return
 		}
 	}
 	mt.PublishAll(300)
 	for _, v := range subers["a"] {
-		if v.v != 300 {
-			t.Fatal(subers)
+		if !assert.Equal(t, 300, v.v) {
+			return
 		}
 	}
 	for _, v := range subers["b"] {
-		if v.v != 300 {
-			t.Fatal(subers)
+		if !assert.Equal(t, 300, v.v) {
+			return
 		}
 	}
-	if mt.Len() != 2 {
-		t.Fatal(mt.Len())
+	if !assert.Equal(t, 2, mt.Len()) {
+		return
 	}
+
 	for _, v := range subers["a"] {
 		mt.Unsubscribe("a", v)
 	}
-	if mt.Len() != 1 {
-		t.Fatal(mt.Len())
+	if !assert.Equal(t, 1, mt.Len()) {
+		return
 	}
 	mt.Range(func(id interface{}, topic pubsub.Topic) bool {
 		if id.(string) == "a" {
-			t.Fatal(topic)
+			t.Error(topic)
+			return false
 		}
 		return true
 	})
+	mt.Range(func(id interface{}, topic pubsub.Topic) bool {
+		if id.(string) != "b" {
+			return true
+		}
+		mt.Destroy("b", topic)
+		return false
+	})
+	if !assert.Equal(t, 0, mt.Len()) {
+		return
+	}
 }

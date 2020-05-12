@@ -17,7 +17,7 @@ type Topic interface {
 	Subscribe(Subscriber) error
 	Unsubscribe(Subscriber) error
 	Destroy() error
-	Len() int
+	IsEmpty() bool
 }
 
 // MultiTopic ...
@@ -101,8 +101,55 @@ func (p *defaultTopic) Range(f func(Subscriber) bool) {
 	}
 }
 
-func (p *defaultTopic) Len() int {
-	return len(p.subers)
+func (p *defaultTopic) IsEmpty() bool {
+	return len(p.subers) == 0
+}
+
+type syncTopic struct {
+	subers sync.Map
+}
+
+func NewSyncTopic() Topic {
+	return &syncTopic{}
+}
+
+func (p *syncTopic) Publish(v interface{}) (err error) {
+	var e error
+	p.subers.Range(func(key, value interface{}) bool {
+		e = key.(Subscriber).OnPublish(v)
+		if e != nil {
+			err = e
+		}
+		return true
+	})
+	return nil
+}
+
+func (p *syncTopic) Subscribe(s Subscriber) (err error) {
+	_, ok := p.subers.LoadOrStore(s, struct{}{})
+	if ok {
+		err = os.ErrExist
+	}
+	return
+}
+
+func (p *syncTopic) Unsubscribe(s Subscriber) (err error) {
+	p.subers.Delete(s)
+	return
+}
+
+func (p *syncTopic) Destroy() error {
+	p.subers = sync.Map{}
+	return nil
+}
+
+func (p *syncTopic) IsEmpty() bool {
+	ok := true
+	p.subers.Range(func(key, value interface{}) bool {
+		ok = false
+		return false
+	})
+	return ok
 }
 
 type safeTopic struct {
@@ -148,11 +195,11 @@ func (p *safeTopic) Destroy() error {
 	return e
 }
 
-func (p *safeTopic) Len() int {
+func (p *safeTopic) IsEmpty() bool {
 	p.RLock()
-	n := p.self.Len()
+	ok := p.self.IsEmpty()
 	p.RUnlock()
-	return n
+	return ok
 }
 
 type topicWithTimer struct {
@@ -167,14 +214,14 @@ type multiTopic struct {
 	idleTime time.Duration
 }
 
-var safeTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
-	tp = newSafeTopic(nil)
+var syncTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
+	tp = NewSyncTopic()
 	return
 }
 
 func newMultiTopic(maker TopicMaker, idleTime time.Duration) *multiTopic {
 	if maker == nil {
-		maker = safeTopicMaker
+		maker = syncTopicMaker
 	}
 	return &multiTopic{
 		maker:    maker,
@@ -232,7 +279,7 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 	if p.idleTime < 0 {
 		return nil
 	}
-	if tp.Len() != 0 {
+	if !tp.IsEmpty() {
 		return nil
 	}
 	// clear topic at now
@@ -245,7 +292,7 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 		p.Lock()
 		defer p.Unlock()
 		tp, ok := p.topics[id]
-		if !ok || tp.Len() != 0 {
+		if !ok || !tp.IsEmpty() {
 			return
 		}
 		tp.Destroy()
