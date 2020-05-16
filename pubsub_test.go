@@ -1,9 +1,10 @@
-package pubsub_test
+package pubsub
 
 import (
+	"errors"
 	"testing"
+	"time"
 
-	pubsub "github.com/jettyu/gopubsub"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -16,7 +17,7 @@ func (p *testSubscriber) OnPublish(v interface{}) error {
 	return nil
 }
 
-func testTopic(t *testing.T, topic pubsub.Topic) {
+func testTopicFun(t *testing.T, topic Topic) {
 	var (
 		ob1 testSubscriber
 		ob2 testSubscriber
@@ -46,13 +47,31 @@ func testTopic(t *testing.T, topic pubsub.Topic) {
 }
 
 func TestTopic(t *testing.T) {
-	testTopic(t, pubsub.NewDefaultTopic())
-	testTopic(t, pubsub.NewSyncTopic())
-	testTopic(t, pubsub.NewSafeTopic(nil))
+	testTopicFun(t, NewSyncTopic())
+}
+
+type testTopic struct {
+	Topic
+}
+
+func newTestTopic(id interface{}) (Topic, error) {
+	if id.(string) == "createFailed" {
+		return nil, errors.New(id.(string))
+	}
+	return &testTopic{
+		Topic: NewSyncTopic(),
+	}, nil
+}
+
+func (p *testTopic) Subscribe(suber Subscriber) error {
+	if suber.(*testSubscriber).v == -1 {
+		return errors.New("failed")
+	}
+	return p.Topic.Subscribe(suber)
 }
 
 func TestMultiTopic(t *testing.T) {
-	mt := pubsub.NewMultiTopic(nil, 0)
+	mt := NewMultiTopic(newTestTopic, 0)
 	defer mt.DestroyAll()
 	subers := map[string][]*testSubscriber{
 		"a": {
@@ -110,21 +129,74 @@ func TestMultiTopic(t *testing.T) {
 	if !assert.Equal(t, 1, mt.Len()) {
 		return
 	}
-	mt.Range(func(id interface{}, topic pubsub.Topic) bool {
+	mt.Range(func(id interface{}, topic Topic) bool {
 		if id.(string) == "a" {
 			t.Error(topic)
 			return false
 		}
 		return true
 	})
-	mt.Range(func(id interface{}, topic pubsub.Topic) bool {
+	mt.Range(func(id interface{}, topic Topic) bool {
 		if id.(string) != "b" {
 			return true
+		}
+		_, ok := topic.(SmartTopic).Get().(*testTopic)
+		if !ok {
+			t.Error(topic)
+			return false
 		}
 		mt.Destroy("b", topic)
 		return false
 	})
-	if !assert.Equal(t, 0, mt.Len()) {
+	if !assert.Equal(t, 0, mt.Len(), mt) {
+		return
+	}
+	// test create failed
+	createFailedSuber := &testSubscriber{}
+	err := mt.Subscribe("createFailed", createFailedSuber)
+	if err == nil {
+		t.Error("test create failed")
+		return
+	}
+	if !assert.Equal(t, 0, mt.Len(), mt) {
+		return
+	}
+	// test first subscribe failed
+	firstSubscriber := &testSubscriber{v: -1}
+	err = mt.Subscribe("first", firstSubscriber)
+	if err == nil {
+		t.Error("test first subscribe failed")
+		return
+	}
+	if !assert.Equal(t, 0, mt.Len(), mt) {
+		return
+	}
+	mt.DestroyAll()
+}
+
+func TestMultiTopicDelay(t *testing.T) {
+	promptTopic := NewMultiTopic(nil, 0)
+	s := &testSubscriber{}
+	id := 1
+	promptTopic.Subscribe(id, s)
+	if !assert.Equal(t, 1, promptTopic.Len()) {
+		return
+	}
+	promptTopic.Unsubscribe(id, s)
+	if !assert.Equal(t, 0, promptTopic.Len()) {
+		return
+	}
+	delayTopic := NewMultiTopic(nil, time.Millisecond*20)
+	delayTopic.Subscribe(id, s)
+	if !assert.Equal(t, 1, delayTopic.Len()) {
+		return
+	}
+	delayTopic.Unsubscribe(id, s)
+	if !assert.Equal(t, 1, delayTopic.Len()) {
+		return
+	}
+	<-time.After(time.Millisecond * 30)
+	if !assert.Equal(t, 0, delayTopic.Len()) {
 		return
 	}
 }
