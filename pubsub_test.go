@@ -21,14 +21,14 @@ func TestPublisher(t *testing.T) {
 		ob1 testSubscriber
 		ob2 testSubscriber
 	)
-	topic.Subscribe(&ob1)
-	topic.Subscribe(&ob2)
-	topic.Publish(1)
+	_ = topic.Subscribe(&ob1)
+	_ = topic.Subscribe(&ob2)
+	_ = topic.Publish(1)
 	if ob1.v != 1 || ob2.v != 1 {
 		t.Fatal(ob1, ob2)
 	}
-	topic.Unsubscribe(&ob2)
-	topic.Publish(2)
+	_ = topic.Unsubscribe(&ob2)
+	_ = topic.Publish(2)
 	if ob1.v != 2 || ob2.v != 1 {
 		t.Fatal(ob1, ob2)
 	}
@@ -36,7 +36,7 @@ func TestPublisher(t *testing.T) {
 
 func TestMultiTopic(t *testing.T) {
 	mt := pubsub.NewMultiTopic(nil, 0)
-	defer mt.DestroyAll()
+	defer func() { _ = mt.DestroyAll() }()
 	subers := map[string][]*testSubscriber{
 		"a": {
 			{
@@ -57,11 +57,11 @@ func TestMultiTopic(t *testing.T) {
 	}
 	for id, v := range subers {
 		for _, suber := range v {
-			mt.Subscribe(id, suber)
+			_ = mt.Subscribe(id, suber)
 		}
 	}
-	mt.Publish("a", 100)
-	mt.Publish("b", 200)
+	_ = mt.Publish("a", 100)
+	_ = mt.Publish("b", 200)
 	for _, v := range subers["a"] {
 		if v.v != 100 {
 			t.Fatal(subers)
@@ -72,7 +72,7 @@ func TestMultiTopic(t *testing.T) {
 			t.Fatal(subers)
 		}
 	}
-	mt.PublishAll(300)
+	_ = mt.PublishAll(300)
 	for _, v := range subers["a"] {
 		if v.v != 300 {
 			t.Fatal(subers)
@@ -87,7 +87,7 @@ func TestMultiTopic(t *testing.T) {
 		t.Fatal(mt.Len())
 	}
 	for _, v := range subers["a"] {
-		mt.Unsubscribe("a", v)
+		_ = mt.Unsubscribe("a", v)
 	}
 	if mt.Len() != 1 {
 		t.Fatal(mt.Len())
