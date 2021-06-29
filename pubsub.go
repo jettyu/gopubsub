@@ -17,7 +17,7 @@ type Topic interface {
 	Subscribe(Subscriber) error
 	Unsubscribe(Subscriber) error
 	Destroy() error
-	Len() int
+	IsEmpty() bool
 }
 
 // MultiTopic ...
@@ -32,290 +32,399 @@ type MultiTopic interface {
 	Len() int
 }
 
+type TopicManager interface {
+	Get(interface{}) (Topic, bool)
+	GetOrCreate(interface{}) (Topic, error)
+	Delete(interface{}, Topic)
+	Range(func(interface{}, Topic) bool)
+	Len() int
+	Clear()
+}
+
+type SmartTopic interface {
+	Topic
+	Get() Topic
+}
+
+// NewSynctopic : topic realized by sync.Map
+func NewSyncTopic() Topic {
+	return &syncTopic{}
+}
+
 // TopicMaker ...
-type TopicMaker func(id interface{}, first Subscriber) (topic Topic, err error)
+type TopicMaker func(id interface{}) (Topic, error)
+type SmartTopicMaker func(interface{}, TopicManager) (Topic, error)
 
-// NewDefaultTopic ...
-func NewDefaultTopic() Topic {
-	return newDefaultTopic()
+// NewTopicManager ...
+func NewTopicManager(maker SmartTopicMaker) TopicManager {
+	if maker == nil {
+		maker = NewSmartTopicMaker(nil, 0)
+	}
+	return newTopicManager(maker)
 }
 
-// NewSafeTopic : add mutex for topic
-// if topic == nil, will use the defautTopic
-func NewSafeTopic(topic Topic) Topic {
-	return newSafeTopic(topic)
-}
-
-// NewMultiTopic :
+// NewMultiTopicWithManager :
 // if maker == nil, will use the safeTopic
 // if idleTime < 0, the topic will destroy the topic when which is empty
 // if idleTime > 0, the topic will check and destroy the topic witch is empty
-func NewMultiTopic(maker TopicMaker, idleTime time.Duration) MultiTopic {
-	return newMultiTopic(maker, idleTime)
+
+func NewMultiTopic(maker TopicMaker, delayTime time.Duration) MultiTopic {
+	return NewMultiTopicWithManager(NewTopicManager(NewSmartTopicMaker(maker, delayTime)))
 }
 
-type defaultTopic struct {
-	subers map[Subscriber]struct{}
+func NewMultiTopicWithManager(manager TopicManager) MultiTopic {
+	if manager == nil {
+		manager = NewTopicManager(nil)
+	}
+	return newMultiTopic(manager)
 }
 
-func newDefaultTopic() *defaultTopic {
-	return &defaultTopic{
-		subers: make(map[Subscriber]struct{}),
+func SyncTopicMaker(id interface{}) (Topic, error) {
+	return NewSyncTopic(), nil
+}
+
+func NewSmartTopic(id interface{}, manager TopicManager,
+	maker TopicMaker, delayTime time.Duration) SmartTopic {
+	if maker == nil {
+		maker = SyncTopicMaker
+	}
+	return newSmartTopic(id, manager, maker, delayTime)
+}
+
+func NewSmartTopicMaker(maker TopicMaker,
+	delayTime time.Duration) SmartTopicMaker {
+	return func(id interface{}, manager TopicManager) (Topic, error) {
+		return NewSmartTopic(id, manager, maker, delayTime), nil
 	}
 }
 
-func (p *defaultTopic) Publish(v interface{}) error {
-	for suber := range p.subers {
-		_ = suber.OnPublish(v)
-	}
-	return nil
+type syncTopic struct {
+	subers sync.Map
 }
 
-func (p *defaultTopic) Subscribe(suber Subscriber) error {
-	_, ok := p.subers[suber]
-	if ok {
-		return os.ErrExist
-	}
-	p.subers[suber] = struct{}{}
-	return nil
-}
-
-func (p *defaultTopic) Unsubscribe(suber Subscriber) error {
-	_, ok := p.subers[suber]
-	if !ok {
-		return os.ErrNotExist
-	}
-	delete(p.subers, suber)
-	return nil
-}
-
-func (p *defaultTopic) Destroy() error {
-	p.subers = make(map[Subscriber]struct{})
-	return nil
-}
-func (p *defaultTopic) Range(f func(Subscriber) bool) {
-	for s := range p.subers {
-		if !f(s) {
-			break
+func (p *syncTopic) Publish(v interface{}) (err error) {
+	var e error
+	p.subers.Range(func(key, value interface{}) bool {
+		e = key.(Subscriber).OnPublish(v)
+		if e != nil {
+			err = e
 		}
-	}
+		return true
+	})
+	return nil
 }
 
-func (p *defaultTopic) Len() int {
-	return len(p.subers)
-}
-
-type safeTopic struct {
-	sync.RWMutex
-	self Topic
-}
-
-func newSafeTopic(self Topic) (tp *safeTopic) {
-	tp = &safeTopic{
-		self: self,
-	}
-	if self == nil {
-		tp.self = NewDefaultTopic()
+func (p *syncTopic) Subscribe(s Subscriber) (err error) {
+	_, ok := p.subers.LoadOrStore(s, struct{}{})
+	if ok {
+		err = os.ErrExist
 	}
 	return
 }
 
-func (p *safeTopic) Publish(v interface{}) error {
-	p.RLock()
-	e := p.self.Publish(v)
-	p.RUnlock()
-	return e
+func (p *syncTopic) Unsubscribe(s Subscriber) (err error) {
+	p.subers.Delete(s)
+	return
 }
 
-func (p *safeTopic) Subscribe(suber Subscriber) error {
+func (p *syncTopic) Destroy() error {
+	p.subers = sync.Map{}
+	return nil
+}
+
+func (p *syncTopic) IsEmpty() bool {
+	ok := true
+	p.subers.Range(func(key, value interface{}) bool {
+		ok = false
+		return false
+	})
+	return ok
+}
+
+type topicManager struct {
+	sync.RWMutex
+	maker  SmartTopicMaker
+	topics sync.Map
+}
+
+func newTopicManager(maker SmartTopicMaker) *topicManager {
+	return &topicManager{
+		maker: maker,
+	}
+}
+
+func (p *topicManager) Get(id interface{}) (topic Topic, ok bool) {
+	v, ok := p.topics.Load(id)
+	if !ok {
+		return
+	}
+	topic = v.(Topic)
+	return
+}
+
+func (p *topicManager) GetOrCreate(id interface{}) (topic Topic, err error) {
+	var ok bool
+	topic, ok = p.Get(id)
+	if ok {
+		return
+	}
 	p.Lock()
 	defer p.Unlock()
-	e := p.self.Subscribe(suber)
-	return e
+	topic, ok = p.Get(id)
+	if ok {
+		return
+	}
+
+	topic, err = p.maker(id, p)
+	if err != nil {
+		return
+	}
+	p.topics.Store(id, topic)
+	return
 }
 
-func (p *safeTopic) Unsubscribe(suber Subscriber) error {
+func (p *topicManager) Delete(id interface{}, topic Topic) {
 	p.Lock()
-	defer p.Unlock()
-	e := p.self.Unsubscribe(suber)
-	return e
+	old, ok := p.Get(id)
+	if ok && old.(Topic) == topic {
+		p.topics.Delete(id)
+	}
+	p.Unlock()
 }
 
-func (p *safeTopic) Destroy() error {
-	p.Lock()
-	defer p.Unlock()
-	e := p.self.Destroy()
-	return e
+func (p *topicManager) Range(f func(interface{}, Topic) bool) {
+	p.topics.Range(func(k, v interface{}) bool {
+		return f(k, v.(Topic))
+	})
 }
 
-func (p *safeTopic) Len() int {
-	p.RLock()
-	n := p.self.Len()
-	p.RUnlock()
+func (p *topicManager) Len() int {
+	n := 0
+	p.topics.Range(func(k, v interface{}) bool {
+		n++
+		return true
+	})
 	return n
 }
 
-type topicWithTimer struct {
-	Topic
-	timer *time.Timer
+func (p *topicManager) Clear() {
+	p.Lock()
+	p.topics = sync.Map{}
+	p.Unlock()
 }
 
 type multiTopic struct {
-	sync.RWMutex
-	maker    TopicMaker
-	topics   map[interface{}]*topicWithTimer
-	idleTime time.Duration
+	manager TopicManager
 }
 
-var safeTopicMaker = func(id interface{}, first Subscriber) (tp Topic, err error) {
-	tp = newSafeTopic(nil)
-	return
+func newMultiTopic(manager TopicManager) *multiTopic {
+	return &multiTopic{manager: manager}
 }
 
-func newMultiTopic(maker TopicMaker, idleTime time.Duration) *multiTopic {
-	if maker == nil {
-		maker = safeTopicMaker
-	}
-	return &multiTopic{
-		maker:    maker,
-		topics:   make(map[interface{}]*topicWithTimer),
-		idleTime: idleTime,
-	}
-}
-
-func (p *multiTopic) Publish(id, v interface{}) error {
-	p.RLock()
-	tp, ok := p.topics[id]
-	p.RUnlock()
-	if ok {
-		return tp.Publish(v)
-	}
-	return nil
-}
-
-func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) (err error) {
-	p.Lock()
-	defer p.Unlock()
-	tp, ok := p.topics[id]
-	if !ok {
-		itp, e := p.maker(id, suber)
-		if e != nil {
-			err = e
-			return
-		}
-		tp = &topicWithTimer{
-			Topic: itp,
-		}
-		p.topics[id] = tp
-	} else {
-		if tp.timer != nil {
-			tp.timer.Stop()
-			tp.timer = nil
-		}
-	}
-	err = tp.Subscribe(suber)
-	return
-}
-
-func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
-	p.Lock()
-	defer p.Unlock()
-	tp, ok := p.topics[id]
+func (p *multiTopic) Publish(id, value interface{}) error {
+	topic, ok := p.manager.Get(id)
 	if !ok {
 		return nil
 	}
-	e = tp.Unsubscribe(suber)
-	if e != nil {
-		return
-	}
-	// do not clear topic
-	if p.idleTime < 0 {
-		return nil
-	}
-	if tp.Len() != 0 {
-		return nil
-	}
-	// clear topic at now
-	if p.idleTime == 0 {
-		_ = tp.Destroy()
-		delete(p.topics, id)
-	}
-	// clear topic after idleTime
-	tp.timer = time.AfterFunc(p.idleTime, func() {
-		p.Lock()
-		defer p.Unlock()
-		tp, ok := p.topics[id]
-		if !ok || tp.Len() != 0 {
-			return
-		}
-		_ = tp.Destroy()
-		delete(p.topics, id)
-	})
+	return topic.Publish(value)
+}
 
-	return
+func (p *multiTopic) Subscribe(id interface{}, suber Subscriber) error {
+	topic, err := p.manager.GetOrCreate(id)
+	if err != nil {
+		return err
+	}
+	return topic.Subscribe(suber)
+}
+
+func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) error {
+	topic, ok := p.manager.Get(id)
+	if !ok {
+		return nil
+	}
+	return topic.Unsubscribe(suber)
 }
 
 func (p *multiTopic) Destroy(id interface{}, topic Topic) error {
-	p.Lock()
-	defer p.Unlock()
-	e := topic.Destroy()
-	if e != nil {
-		return e
-	}
-	tp, ok := p.topics[id]
-	if !ok || tp.Topic != topic {
-		return nil
-	}
-	if tp.timer != nil {
-		tp.timer.Stop()
-	}
-	delete(p.topics, id)
-	return nil
+	err := topic.Destroy()
+	p.manager.Delete(id, topic)
+	return err
+}
+
+func (p *multiTopic) Range(f func(interface{}, Topic) bool) {
+	p.manager.Range(f)
 }
 
 func (p *multiTopic) DestroyAll() error {
-	p.Lock()
-	defer p.Unlock()
-	for _, topic := range p.topics {
+	p.manager.Range(func(id interface{}, topic Topic) bool {
 		_ = topic.Destroy()
-		if topic.timer != nil {
-			topic.timer.Stop()
-		}
-	}
-	p.topics = make(map[interface{}]*topicWithTimer)
+		return true
+	})
+	p.manager.Clear()
 	return nil
 }
 
 func (p *multiTopic) PublishAll(v interface{}) error {
-	p.RLock()
-	topics := make([]*topicWithTimer, 0, len(p.topics))
-	for _, tp := range p.topics {
-		topics = append(topics, tp)
-	}
-	p.RUnlock()
-	for _, tp := range topics {
-		_ = tp.Publish(v)
-	}
+	p.manager.Range(func(id interface{}, topic Topic) bool {
+		_ = topic.Publish(v)
+		return true
+	})
 	return nil
 }
 
-func (p *multiTopic) Range(f func(id interface{}, topic Topic) bool) {
-	tmp := make(map[interface{}]Topic)
-	p.RLock()
-	for id, topic := range p.topics {
-		tmp[id] = topic.Topic
-	}
-	p.RUnlock()
-	for id, topic := range tmp {
-		if !f(id, topic) {
-			break
-		}
+func (p *multiTopic) Len() int {
+	return p.manager.Len()
+}
+
+type smartTopic struct {
+	sync.RWMutex
+	topic     Topic
+	id        interface{}
+	manager   TopicManager
+	maker     TopicMaker
+	delayTime time.Duration
+	timer     *time.Timer
+	destroyed bool
+}
+
+func newSmartTopic(
+	id interface{},
+	manager TopicManager,
+	maker TopicMaker,
+	delayTime time.Duration) *smartTopic {
+	return &smartTopic{
+		id:        id,
+		manager:   manager,
+		maker:     maker,
+		delayTime: delayTime,
 	}
 }
 
-func (p *multiTopic) Len() int {
+func (p *smartTopic) destroy() {
+	if p.destroyed {
+		return
+	}
+	p.destroyed = true
+	p.manager.Delete(p.id, p)
+	if p.topic != nil {
+		_ = p.topic.Destroy()
+	}
+	if p.timer != nil {
+		p.timer.Stop()
+	}
+}
+
+func (p *smartTopic) expire() {
+	if p.delayTime < 0 {
+		return
+	}
+	if p.delayTime == 0 {
+		p.destroy()
+		return
+	}
+	if p.timer != nil {
+		p.timer.Reset(p.delayTime)
+		return
+	}
+	p.timer = time.AfterFunc(p.delayTime, func() {
+		p.Lock()
+		defer p.Unlock()
+		if !p.topic.IsEmpty() {
+			return
+		}
+		p.destroy()
+	})
+}
+
+func (p *smartTopic) stopExpire() {
+	if p.delayTime <= 0 || p.timer == nil {
+		return
+	}
+	p.timer.Stop()
+}
+
+func (p *smartTopic) Subscribe(suber Subscriber) (err error) {
+	p.Lock()
+	defer p.Unlock()
+	if p.destroyed {
+		tp, e := p.manager.GetOrCreate(p.id)
+		if e != nil {
+			err = e
+			return
+		}
+		err = tp.Subscribe(suber)
+		return
+	}
+	if p.topic == nil {
+		p.topic, err = p.maker(p.id)
+		if err != nil {
+			p.destroy()
+			return
+		}
+		err = p.topic.Subscribe(suber)
+		if err != nil {
+			p.destroy()
+			return
+		}
+		return
+	}
+	err = p.topic.Subscribe(suber)
+	p.stopExpire()
+	return
+}
+
+func (p *smartTopic) Unsubscribe(suber Subscriber) (err error) {
+	p.Lock()
+	defer p.Unlock()
+	if p.topic == nil || p.destroyed {
+		return
+	}
+	err = p.topic.Unsubscribe(suber)
+	if err != nil {
+		return
+	}
+	if !p.topic.IsEmpty() {
+		return
+	}
+	p.expire()
+	return
+}
+
+func (p *smartTopic) Destroy() (err error) {
+	p.Lock()
+	defer p.Unlock()
+	p.destroy()
+	return
+}
+
+func (p *smartTopic) IsEmpty() bool {
 	p.RLock()
-	n := len(p.topics)
+	empty := p.topic == nil || p.topic.IsEmpty()
 	p.RUnlock()
-	return n
+	return empty
+}
+
+func (p *smartTopic) Publish(v interface{}) (err error) {
+	p.RLock()
+	topic := p.topic
+	destroyed := p.destroyed
+	p.RUnlock()
+	if topic != nil {
+		err = topic.Publish(v)
+	}
+	if destroyed {
+		tp, ok := p.manager.Get(p.id)
+		if !ok {
+			return
+		}
+		_ = tp.Publish(v)
+	}
+	return
+}
+
+func (p *smartTopic) Get() Topic {
+	p.RLock()
+	topic := p.topic
+	p.RUnlock()
+	return topic
 }
