@@ -66,7 +66,7 @@ func newDefaultTopic() *defaultTopic {
 
 func (p *defaultTopic) Publish(v interface{}) error {
 	for suber := range p.subers {
-		suber.OnPublish(v)
+		_ = suber.OnPublish(v)
 	}
 	return nil
 }
@@ -136,7 +136,7 @@ func (p *safeTopic) Subscribe(suber Subscriber) error {
 
 func (p *safeTopic) Unsubscribe(suber Subscriber) error {
 	p.Lock()
-	p.Unlock()
+	defer p.Unlock()
 	e := p.self.Unsubscribe(suber)
 	return e
 }
@@ -237,7 +237,7 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 	}
 	// clear topic at now
 	if p.idleTime == 0 {
-		tp.Destroy()
+		_ = tp.Destroy()
 		delete(p.topics, id)
 	}
 	// clear topic after idleTime
@@ -248,7 +248,7 @@ func (p *multiTopic) Unsubscribe(id interface{}, suber Subscriber) (e error) {
 		if !ok || tp.Len() != 0 {
 			return
 		}
-		tp.Destroy()
+		_ = tp.Destroy()
 		delete(p.topics, id)
 	})
 
@@ -277,7 +277,7 @@ func (p *multiTopic) DestroyAll() error {
 	p.Lock()
 	defer p.Unlock()
 	for _, topic := range p.topics {
-		topic.Destroy()
+		_ = topic.Destroy()
 		if topic.timer != nil {
 			topic.timer.Stop()
 		}
@@ -294,7 +294,7 @@ func (p *multiTopic) PublishAll(v interface{}) error {
 	}
 	p.RUnlock()
 	for _, tp := range topics {
-		tp.Publish(v)
+		_ = tp.Publish(v)
 	}
 	return nil
 }
